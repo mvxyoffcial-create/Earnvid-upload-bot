@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import asyncio
 import aiohttp
 import aiofiles
@@ -70,13 +71,19 @@ async def upload_file_stream(upload_url: str, file_path: str, api_key: str, stat
 
     data = aiohttp.FormData()
     data.add_field('key', api_key)
+    data.add_field('html_redirect', '0')
     data.add_field('file', file_sender(), filename=file_name)
 
     # High-performance client session settings
     connector = aiohttp.TCPConnector(limit=100, limit_per_host=20, enable_cleanup_closed=True)
     async with aiohttp.ClientSession(connector=connector) as session:
         async with session.post(upload_url, data=data) as response:
-            return await response.json()
+            # Safely fetch raw string and deserialize to avoid MIME-type decoding errors
+            raw_text = await response.text()
+            try:
+                return json.loads(raw_text)
+            except json.JSONDecodeError:
+                raise Exception(f"Server returned non-JSON output: {raw_text[:200]}")
 
 @app.on_message(filters.command("start"))
 async def start_cmd(_, message: Message):
