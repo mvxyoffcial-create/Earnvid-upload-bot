@@ -1,12 +1,14 @@
 import os
 import time
 import json
+import html
 import asyncio
 import aiohttp
 import aiofiles
 from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.enums import ParseMode
 
 # Configuration
 API_ID = 36282056
@@ -70,41 +72,30 @@ async def get_upload_server(api_key: str) -> str:
 async def upload_file_stream(upload_url: str, file_path: str, api_key: str, status_msg: Message):
     file_name = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
-    bytes_uploaded = 0
-    last_update = [time.time()]
-
-    async def file_sender():
-        nonlocal bytes_uploaded
-        chunk_size = 8 * 1024 * 1024 # 8MB chunks for balanced network buffer
-        async with aiofiles.open(file_path, 'rb') as f:
-            while True:
-                chunk = await f.read(chunk_size)
-                if not chunk:
-                    break
-                bytes_uploaded += len(chunk)
-                await progress_callback(bytes_uploaded, file_size, status_msg, "Uploading to EarnVids...", last_update)
-                yield chunk
-
+    
+    # Send directly via standard multipart form-data so Content-Length header is populated
     data = aiohttp.FormData()
     data.add_field('key', api_key)
-    data.add_field('file', file_sender(), filename=file_name)
-
-    connector = aiohttp.TCPConnector(limit=100, limit_per_host=20, enable_cleanup_closed=True)
-    timeout = aiohttp.ClientTimeout(total=7200) # 2-hour timeout for large uploads
     
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        async with session.post(upload_url, data=data) as response:
-            # Inform user while waiting for server response processing
+    with open(file_path, 'rb') as f:
+        data.add_field('file', f, filename=file_name)
+
+        connector = aiohttp.TCPConnector(limit=100, limit_per_host=20, enable_cleanup_closed=True)
+        timeout = aiohttp.ClientTimeout(total=7200) # 2-hour timeout for large uploads
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             try:
-                await status_msg.edit_text("⚡ **Uploading Complete!**\n\n⏳ Processing file on EarnVids server...")
+                await status_msg.edit_text("⚡ **Uploading to EarnVids...**\n\n⏳ Transferring file and processing...")
             except Exception:
                 pass
-                
-            raw_text = await response.text()
-            try:
-                return json.loads(raw_text)
-            except json.JSONDecodeError:
-                raise Exception(f"Server returned invalid response: {raw_text[:200]}")
+                    
+            async with session.post(upload_url, data=data) as response:
+                raw_text = await response.text()
+                try:
+                    return json.loads(raw_text)
+                except json.JSONDecodeError:
+                    clean_res = raw_text[:150].replace("\n", " ")
+                    raise Exception(f"Server returned non-JSON output (HTTP {response.status}): {clean_res}")
 
 @app.on_message(filters.command("start"))
 async def start_cmd(_, message: Message):
@@ -128,10 +119,10 @@ async def process_media(client, message: Message):
         await status_msg.edit_text("🔍 **Requesting EarnVids server...**")
         upload_server = await get_upload_server(EARNVIDS_KEY)
         
-        # 3. Stream Upload to EarnVids
+        # 3. Upload to EarnVids
         upload_res = await upload_file_stream(upload_server, file_path, EARNVIDS_KEY, status_msg)
         
-        # Check response array or status dictionary
+        # Extract filecode from diverse API responses
         file_code = None
         if isinstance(upload_res, list) and len(upload_res) > 0:
             file_code = upload_res[0].get("filecode")
@@ -158,8 +149,8 @@ async def process_media(client, message: Message):
             await status_msg.edit_text(f"❌ **Upload failed:** {msg}")
             
     except Exception as e:
-        err_msg = str(e).replace("`", "")
-        await status_msg.edit_text(f"⚠️ **Error:** `{err_msg}`")
+        safe_err = html.escape(str(e))
+        await status_msg.edit_text(f"⚠️ <b>Error:</b> {safe_err}", parse_mode=ParseMode.HTML)
     finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
