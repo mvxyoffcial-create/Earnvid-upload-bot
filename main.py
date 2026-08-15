@@ -20,7 +20,14 @@ PORT = int(os.getenv("PORT", "8000"))
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-app = Client("earnvids_uploader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Initialize Pyrogram with in_memory=True to eliminate auth byte errors on cloud deployments
+app = Client(
+    "earnvids_uploader_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True
+)
 
 # --- Koyeb Health Check Web Server ---
 async def health_check(request):
@@ -71,9 +78,7 @@ async def get_upload_server(api_key: str) -> str:
 
 async def upload_file_stream(upload_url: str, file_path: str, api_key: str, status_msg: Message):
     file_name = os.path.basename(file_path)
-    file_size = os.path.getsize(file_path)
     
-    # Send directly via standard multipart form-data so Content-Length header is populated
     data = aiohttp.FormData()
     data.add_field('key', api_key)
     
@@ -81,7 +86,7 @@ async def upload_file_stream(upload_url: str, file_path: str, api_key: str, stat
         data.add_field('file', f, filename=file_name)
 
         connector = aiohttp.TCPConnector(limit=100, limit_per_host=20, enable_cleanup_closed=True)
-        timeout = aiohttp.ClientTimeout(total=7200) # 2-hour timeout for large uploads
+        timeout = aiohttp.ClientTimeout(total=7200) # 2-hour timeout for large files
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             try:
@@ -122,7 +127,7 @@ async def process_media(client, message: Message):
         # 3. Upload to EarnVids
         upload_res = await upload_file_stream(upload_server, file_path, EARNVIDS_KEY, status_msg)
         
-        # Extract filecode from diverse API responses
+        # Extract filecode safely from server response
         file_code = None
         if isinstance(upload_res, list) and len(upload_res) > 0:
             file_code = upload_res[0].get("filecode")
