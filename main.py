@@ -140,12 +140,12 @@ async def process_media(client, message: Message):
                 file_code = upload_res["result"].get("filecode")
 
         if file_code:
-            embed_url = f"https://earnvids.com/embed-{file_code}.html"
+            embed_url = f"https://morencius.com/embed/{file_code}"
             iframe_code = f'<iframe src="{embed_url}" width="640" height="360" frameborder="0" allowfullscreen></iframe>'
             
             response_text = (
                 f"✅ **Upload Complete!**\n\n"
-                f"🔗 **Embed URL:** `{embed_url}`\n\n"
+                f"🔗 **Embed URL:**\n`{embed_url}`\n\n"
                 f"💻 **HTML Embed Code:**\n`{iframe_code}`"
             )
             await status_msg.edit_text(response_text)
