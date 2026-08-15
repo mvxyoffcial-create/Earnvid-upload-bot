@@ -14,7 +14,7 @@ API_HASH = "3a948acece533f362b4c90b2b3c14b60"
 BOT_TOKEN = "8840164284:AAGNTcrtD0I_CXenRU_Ur0X8HqWxPlInN2A"
 EARNVIDS_KEY = "46838mq8i750x5kmqaobb"
 DOWNLOAD_DIR = "./downloads"
-PORT = "8000"
+PORT = int(os.getenv("PORT", "8000"))
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -75,7 +75,7 @@ async def upload_file_stream(upload_url: str, file_path: str, api_key: str, stat
 
     async def file_sender():
         nonlocal bytes_uploaded
-        chunk_size = 32 * 1024 * 1024 
+        chunk_size = 8 * 1024 * 1024 # 8MB chunks for balanced network buffer
         async with aiofiles.open(file_path, 'rb') as f:
             while True:
                 chunk = await f.read(chunk_size)
@@ -87,18 +87,24 @@ async def upload_file_stream(upload_url: str, file_path: str, api_key: str, stat
 
     data = aiohttp.FormData()
     data.add_field('key', api_key)
-    data.add_field('html_redirect', '0')
     data.add_field('file', file_sender(), filename=file_name)
 
     connector = aiohttp.TCPConnector(limit=100, limit_per_host=20, enable_cleanup_closed=True)
-    timeout = aiohttp.ClientTimeout(total=7200) # 2-hour timeout for ultra-large files
+    timeout = aiohttp.ClientTimeout(total=7200) # 2-hour timeout for large uploads
+    
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         async with session.post(upload_url, data=data) as response:
+            # Inform user while waiting for server response processing
+            try:
+                await status_msg.edit_text("⚡ **Uploading Complete!**\n\n⏳ Processing file on EarnVids server...")
+            except Exception:
+                pass
+                
             raw_text = await response.text()
             try:
                 return json.loads(raw_text)
             except json.JSONDecodeError:
-                raise Exception(f"Server returned non-JSON output: {raw_text[:200]}")
+                raise Exception(f"Server returned invalid response: {raw_text[:200]}")
 
 @app.on_message(filters.command("start"))
 async def start_cmd(_, message: Message):
@@ -125,8 +131,19 @@ async def process_media(client, message: Message):
         # 3. Stream Upload to EarnVids
         upload_res = await upload_file_stream(upload_server, file_path, EARNVIDS_KEY, status_msg)
         
-        if upload_res.get("status") == 200 and "files" in upload_res and len(upload_res["files"]) > 0:
-            file_code = upload_res["files"][0]["filecode"]
+        # Check response array or status dictionary
+        file_code = None
+        if isinstance(upload_res, list) and len(upload_res) > 0:
+            file_code = upload_res[0].get("filecode")
+        elif isinstance(upload_res, dict):
+            if upload_res.get("status") == 200 and "files" in upload_res and len(upload_res["files"]) > 0:
+                file_code = upload_res["files"][0].get("filecode")
+            elif "files" in upload_res and len(upload_res["files"]) > 0:
+                file_code = upload_res["files"][0].get("filecode")
+            elif "result" in upload_res and isinstance(upload_res["result"], dict):
+                file_code = upload_res["result"].get("filecode")
+
+        if file_code:
             embed_url = f"https://earnvids.com/embed-{file_code}.html"
             iframe_code = f'<iframe src="{embed_url}" width="640" height="360" frameborder="0" allowfullscreen></iframe>'
             
@@ -137,7 +154,8 @@ async def process_media(client, message: Message):
             )
             await status_msg.edit_text(response_text)
         else:
-            await status_msg.edit_text(f"❌ **Upload failed:** {upload_res.get('msg', 'Unknown Error')}")
+            msg = upload_res.get("msg", "Unknown error or missing filecode") if isinstance(upload_res, dict) else str(upload_res)
+            await status_msg.edit_text(f"❌ **Upload failed:** {msg}")
             
     except Exception as e:
         err_msg = str(e).replace("`", "")
